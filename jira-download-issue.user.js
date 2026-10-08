@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Jira Download Issue
 // @namespace    local.jira-download-issue
-// @version      1.3.0
+// @version      1.4.0
 // @description  Download the open Jira Cloud issue as HTML or Markdown
 // @match        https://*.atlassian.net/*
 // @grant        GM_download
@@ -27,7 +27,7 @@
         'parent', 'subtasks', 'project'
     ].join(',');
 
-    console.log('[JIRA] script started (v1.3.0) on', typeof location !== 'undefined' ? location.href : '');
+    console.log('[JIRA] script started (v1.4.0) on', typeof location !== 'undefined' ? location.href : '');
 
     function issueKeyFromUrl(href) {
         var url;
@@ -83,7 +83,6 @@
         var status = err && err.status;
         if (status === 401 || status === 403) return 'session could not read the issue';
         if (status === 404) return 'unknown issue key';
-        if (err && err.name === 'AbortError') return 'choose the jiraHtml or jiraMD folder inside Downloads';
         if (err && err.message) return err.message;
         return 'download failed';
     }
@@ -841,129 +840,15 @@
         return lines.join('\n');
     }
 
-    // Chromium's native GM_download turns "jiraHtml/file.html" into one file
-    // name. A directory handle writes the original name into a real folder.
-    // The Downloads folder itself is blocked, so the chosen folder is
-    // Downloads/jiraHtml or Downloads/jiraMD.
-    var DOWNLOAD_DIRS = { jiraHtml: null, jiraMD: null };
-    var DOWNLOAD_DIR_CANDIDATES = { jiraHtml: null, jiraMD: null };
-    var HANDLE_DB = 'jira-download-issue';
-    var HANDLE_STORE = 'handles';
-
     function downloadFolder(kind) {
         return kind === 'md' ? 'jiraMD' : 'jiraHtml';
     }
 
-    function fsHost() {
-        if (typeof unsafeWindow !== 'undefined' && unsafeWindow && typeof unsafeWindow.showDirectoryPicker === 'function') {
-            return unsafeWindow;
-        }
-        if (typeof window !== 'undefined' && typeof window.showDirectoryPicker === 'function') return window;
-        return null;
-    }
-
-    function handleDb() {
-        var host = fsHost();
-        if (!host || !host.indexedDB) return Promise.reject(new Error('indexedDB unavailable'));
-        return new Promise(function (resolve, reject) {
-            var req = host.indexedDB.open(HANDLE_DB, 1);
-            req.onupgradeneeded = function () {
-                if (!req.result.objectStoreNames.contains(HANDLE_STORE)) {
-                    req.result.createObjectStore(HANDLE_STORE);
-                }
-            };
-            req.onsuccess = function () { resolve(req.result); };
-            req.onerror = function () { reject(req.error || new Error('could not open folder store')); };
-        });
-    }
-
-    function readStoredHandle(folder) {
-        return handleDb().then(function (db) {
-            return new Promise(function (resolve, reject) {
-                var tx = db.transaction(HANDLE_STORE, 'readonly');
-                var req = tx.objectStore(HANDLE_STORE).get(folder);
-                req.onsuccess = function () { resolve(req.result || null); };
-                req.onerror = function () { reject(req.error || new Error('could not read folder')); };
-            });
-        });
-    }
-
-    function storeHandle(folder, handle) {
-        return handleDb().then(function (db) {
-            return new Promise(function (resolve, reject) {
-                var tx = db.transaction(HANDLE_STORE, 'readwrite');
-                var req = tx.objectStore(HANDLE_STORE).put(handle, folder);
-                req.onsuccess = function () { resolve(); };
-                req.onerror = function () { reject(req.error || new Error('could not store folder')); };
-            });
-        }).catch(function (err) {
-            console.log('[JIRA] could not remember', folder, err);
-        });
-    }
-
-    function restoreDownloadDirs() {
-        if (!fsHost()) return;
-        ['jiraHtml', 'jiraMD'].forEach(function (folder) {
-            readStoredHandle(folder).then(function (handle) {
-                if (!handle || typeof handle.queryPermission !== 'function') return;
-                DOWNLOAD_DIR_CANDIDATES[folder] = handle;
-                return handle.queryPermission({ mode: 'readwrite' }).then(function (state) {
-                    if (state === 'granted') DOWNLOAD_DIRS[folder] = handle;
-                });
-            }).catch(function () {});
-        });
-    }
-
-    function pickDownloadDir(folder, btn) {
-        var host = fsHost();
-        if (!host) return Promise.resolve(null);
-        if (btn) btn.textContent = 'choose ' + folder + '…';
-        console.log('[JIRA] select Downloads/' + folder + '. The file name stays unchanged.');
-        return host.showDirectoryPicker({
-            id: 'jira-download-' + folder,
-            mode: 'readwrite',
-            startIn: 'downloads'
-        }).then(function (handle) {
-            DOWNLOAD_DIRS[folder] = handle;
-            DOWNLOAD_DIR_CANDIDATES[folder] = handle;
-            return storeHandle(folder, handle).then(function () { return handle; });
-        });
-    }
-
-    // Called from the click so the folder prompt still has the user gesture.
-    function prepareDownloadDir(folder, btn) {
-        if (DOWNLOAD_DIRS[folder]) return Promise.resolve(DOWNLOAD_DIRS[folder]);
-        var candidate = DOWNLOAD_DIR_CANDIDATES[folder];
-        if (candidate && typeof candidate.requestPermission === 'function') {
-            if (btn) btn.textContent = 'allow folder…';
-            return candidate.requestPermission({ mode: 'readwrite' }).then(function (state) {
-                if (state === 'granted') {
-                    DOWNLOAD_DIRS[folder] = candidate;
-                    if (btn) btn.textContent = 'saving…';
-                    return candidate;
-                }
-                DOWNLOAD_DIR_CANDIDATES[folder] = null;
-                return pickDownloadDir(folder, btn);
-            });
-        }
-        if (!fsHost()) return Promise.resolve(null);
-        return pickDownloadDir(folder, btn);
-    }
-
-    function writeDownloadFile(dir, filename, text, mime) {
-        return dir.getFileHandle(filename, { create: true }).then(function (file) {
-            return file.createWritable().then(function (writable) {
-                return writable.write(new Blob([text], { type: mime + ';charset=utf-8' })).then(function () {
-                    return writable.close();
-                });
-            });
-        });
-    }
-
-    function gmSupportsSubfolder() {
-        var ua = '';
-        if (typeof navigator !== 'undefined' && navigator) ua = String(navigator.userAgent || '');
-        return /Firefox\//.test(ua) && !/Seamonkey\//.test(ua);
+    // Tampermonkey saves this path under the browser download folder.
+    // "/" is the folder separator on Windows, macOS, and Linux.
+    // Requires Tampermonkey Settings → Downloads → Download Mode → Browser API.
+    function downloadRelativeName(folder, filename) {
+        return folder + '/' + filename;
     }
 
     function downloadText(text, filename, mime, folder) {
@@ -985,9 +870,7 @@
                 console.log('[JIRA] plain download triggered:', a.download);
             }
             if (typeof GM_download === 'function') {
-                // Forward slash is the download-path separator on Windows, macOS, and Linux.
-                // A backslash is kept as part of the file name.
-                var name = folder && gmSupportsSubfolder() ? folder + '/' + filename : filename;
+                var name = downloadRelativeName(folder, filename);
                 console.log('[JIRA] using GM_download:', name);
                 GM_download({
                     url: 'data:' + mime + ';charset=utf-8,' + encodeURIComponent(text),
@@ -1060,24 +943,15 @@
         var key = issueKeyFromUrl(location.href);
         if (!key || btn.disabled) return;
         var folder = downloadFolder(kind);
-        var dirPromise = prepareDownloadDir(folder, btn);
         setBusy(true);
-        if (btn.textContent.indexOf('choose ') !== 0 && btn.textContent.indexOf('allow ') !== 0) {
-            btn.textContent = 'saving…';
-        }
+        btn.textContent = 'saving…';
         console.log('[JIRA] download clicked', kind, key);
         fetchSnapshot(key).then(function (snap) {
             var markdown = kind === 'md';
             var body = markdown ? renderMarkdown(snap) : renderHtml(snap);
             var filename = downloadBaseName(snap) + (markdown ? '.md' : '.html');
             var mime = markdown ? 'text/markdown' : 'text/html';
-            return dirPromise.then(function (dir) {
-                if (dir) {
-                    console.log('[JIRA] writing', folder + '/' + filename);
-                    return writeDownloadFile(dir, filename, body, mime);
-                }
-                return downloadText(body, filename, mime, folder);
-            }).then(function () {
+            return downloadText(body, filename, mime, folder).then(function () {
                 console.log('[JIRA] saved', filename);
                 flash(btn, 'saved');
             });
@@ -1126,7 +1000,6 @@
     }
 
     if (typeof document !== 'undefined' && document.documentElement) {
-        restoreDownloadDirs();
         setInterval(ensureBar, 1000);
         if (document.body) ensureBar();
         else document.addEventListener('DOMContentLoaded', ensureBar);
