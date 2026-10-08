@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Jira Download Issue
 // @namespace    local.jira-download-issue
-// @version      1.1.0
+// @version      1.2.0
 // @description  Download the open Jira Cloud issue as HTML or Markdown
 // @match        https://*.atlassian.net/*
 // @grant        GM_download
@@ -27,7 +27,7 @@
         'parent', 'subtasks', 'project'
     ].join(',');
 
-    console.log('[JIRA] script started (v1.1.0) on', typeof location !== 'undefined' ? location.href : '');
+    console.log('[JIRA] script started (v1.2.0) on', typeof location !== 'undefined' ? location.href : '');
 
     function issueKeyFromUrl(href) {
         var url;
@@ -840,6 +840,33 @@
         return lines.join('\n');
     }
 
+    // GM_download writes under the browser download folder.
+    // Windows needs "\". macOS and Linux treat "\" as part of the file name.
+    function downloadPathSeparator() {
+        var platform = '';
+        var ua = '';
+        if (typeof navigator !== 'undefined' && navigator) {
+            platform = String(navigator.platform || '');
+            ua = String(navigator.userAgent || '');
+        }
+        if (/^Win/i.test(platform) || /Windows/i.test(ua)) return '\\';
+        return '/';
+    }
+
+    function downloadFolder(filename, mime) {
+        var name = String(filename || '').toLowerCase();
+        var type = String(mime || '').toLowerCase();
+        if (name.slice(-3) === '.md' || type.indexOf('markdown') !== -1) return 'jiraMD';
+        if (name.slice(-5) === '.html' || name.slice(-4) === '.htm' || type.indexOf('html') !== -1) return 'jiraHtml';
+        return '';
+    }
+
+    function downloadRelativeName(filename, mime) {
+        var folder = downloadFolder(filename, mime);
+        if (!folder) return filename;
+        return folder + downloadPathSeparator() + filename;
+    }
+
     function downloadText(text, filename, mime) {
         return new Promise(function (resolve, reject) {
             var blob = new Blob([text], { type: mime });
@@ -850,6 +877,7 @@
             function plainDownload() {
                 var a = document.createElement('a');
                 a.href = blobUrl;
+                // The download attribute cannot choose a subfolder.
                 a.download = filename;
                 document.body.appendChild(a);
                 a.click();
@@ -858,7 +886,7 @@
                 console.log('[JIRA] plain download triggered:', a.download);
             }
             if (typeof GM_download === 'function') {
-                var name = 'jira_issues/' + filename;
+                var name = downloadRelativeName(filename, mime);
                 console.log('[JIRA] using GM_download:', name);
                 GM_download({
                     url: 'data:' + mime + ';charset=utf-8,' + encodeURIComponent(text),
