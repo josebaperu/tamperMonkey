@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Jira Download Issue
 // @namespace    local.jira-download-issue
-// @version      1.5.1
+// @version      1.5.2
 // @description  Download the open Jira Cloud issue as HTML or Markdown
 // @match        https://*.atlassian.net/*
 // @grant        GM_download
@@ -27,7 +27,7 @@
         'parent', 'subtasks', 'project'
     ].join(',');
 
-    console.log('[JIRA] script started (v1.5.1) on', typeof location !== 'undefined' ? location.href : '');
+    console.log('[JIRA] script started (v1.5.2) on', typeof location !== 'undefined' ? location.href : '');
     console.log('[JIRA] GM_download:', typeof GM_download === 'function' ? 'available' : 'missing');
 
     function issueKeyFromUrl(href) {
@@ -845,10 +845,17 @@
         return kind === 'md' ? 'jiraMD' : 'jiraHtml';
     }
 
-    // Same save as the playlist script: data:text/plain and folder/filename.
-    // Tampermonkey's default allow list includes .txt and not .html or .md.
+    // text/plain makes the browser replace .html and .md with .txt.
+    function downloadMime(filename) {
+        var name = String(filename || '').toLowerCase();
+        if (name.slice(-5) === '.html' || name.slice(-4) === '.htm') return 'text/html';
+        if (name.slice(-3) === '.md') return 'text/markdown';
+        return 'text/plain';
+    }
+
     function downloadText(text, filename, folder) {
-        var blob = new Blob([text], { type: 'text/plain' });
+        var mime = downloadMime(filename);
+        var blob = new Blob([text], { type: mime });
         var blobUrl = URL.createObjectURL(blob);
 
         function cleanup() {
@@ -883,9 +890,9 @@
             var dot = filename.lastIndexOf('.');
             var extension = dot === -1 ? '' : filename.slice(dot);
             console.log('[JIRA] GM_download path:', 'Downloads/' + name);
-            console.log('[JIRA] GM_download extension:', extension || '(none)', 'chars:', text.length);
+            console.log('[JIRA] GM_download type:', mime, 'extension:', extension || '(none)', 'chars:', text.length);
             GM_download({
-                url: 'data:text/plain;charset=utf-8,' + encodeURIComponent(text),
+                url: 'data:' + mime + ';charset=utf-8,' + encodeURIComponent(text),
                 name: name,
                 saveAs: false,
                 onload: function () {
