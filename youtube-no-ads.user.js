@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         YouTube / YouTube Music
 // @namespace    https://tampermonkey.net/
-// @version      1.1.0
-// @description  Block YouTube ads. On YouTube Music, leave the player square blank.
+// @version      1.2.0
+// @description  Block YouTube ads. On YouTube Music, show a black player square. Hide Shorts on the YouTube home page.
 // @author       you
 // @match        https://www.youtube.com/*
 // @match        https://m.youtube.com/*
@@ -29,12 +29,17 @@
   if (!window.__ytAdBlock) {
     window.__ytAdBlock = true;
 
-    // YouTube Music only: hide the video wrapper so the player square stays
-    // blank. Audio keeps playing. No toggle. www.youtube.com and m.youtube.com
+    // YouTube Music only: hide the video wrapper and paint the player square
+    // black. Audio keeps playing. No toggle. www.youtube.com and m.youtube.com
     // are unchanged.
     if (location.hostname === 'music.youtube.com') {
       var ytmBlank = document.createElement('style');
       ytmBlank.textContent = [
+        'ytmusic-player[video-mode],',
+        'ytmusic-player[video-mode] #song-video {',
+        '  background: #000 !important;',
+        '  background-color: #000 !important;',
+        '}',
         'ytmusic-player #song-video .player-wrapper,',
         'ytmusic-player #song-video .html5-video-container,',
         'ytmusic-player #song-video video,',
@@ -50,6 +55,27 @@
         '}'
       ].join('\n');
       (document.head || document.documentElement).appendChild(ytmBlank);
+    }
+
+    // YouTube home only: hide Shorts shelves before the removal pass runs.
+    if (location.hostname === 'www.youtube.com' || location.hostname === 'm.youtube.com') {
+      var homeShortsStyle = document.createElement('style');
+      homeShortsStyle.textContent = [
+        'html.yt-no-home-shorts ytd-rich-shelf-renderer[is-shorts],',
+        'html.yt-no-home-shorts ytd-rich-section-renderer:has(ytd-rich-shelf-renderer[is-shorts]),',
+        'html.yt-no-home-shorts ytd-rich-item-renderer:has(ytm-shorts-lockup-view-model),',
+        'html.yt-no-home-shorts ytd-rich-item-renderer:has(ytm-shorts-lockup-view-model-v2),',
+        'html.yt-no-home-shorts ytd-reel-shelf-renderer,',
+        'html.yt-no-home-shorts ytd-shorts-shelf-renderer,',
+        'html.yt-no-home-shorts ytm-reel-shelf-renderer,',
+        'html.yt-no-home-shorts ytm-rich-section-renderer:has(ytm-reel-shelf-renderer),',
+        'html.yt-no-home-shorts ytm-rich-section-renderer:has(ytm-shorts-lockup-view-model),',
+        'html.yt-no-home-shorts ytm-rich-item-renderer:has(ytm-shorts-lockup-view-model),',
+        'html.yt-no-home-shorts ytm-rich-item-renderer:has(ytm-shorts-lockup-view-model-v2) {',
+        '  display: none !important;',
+        '}'
+      ].join('\n');
+      (document.head || document.documentElement).appendChild(homeShortsStyle);
     }
 
     // Keys YouTube uses to carry ad breaks in the player/browse responses.
@@ -161,6 +187,63 @@
       }
     }
 
+    function isYouTubeHome() {
+      return (location.hostname === 'www.youtube.com' || location.hostname === 'm.youtube.com') &&
+        (location.pathname === '/' || location.pathname === '');
+    }
+
+    function removeEl(node) {
+      if (node && node.parentNode) {
+        node.remove();
+      }
+    }
+
+    // Shorts stay available on /shorts, search, watch, and channel pages.
+    // Only the home landing feed loses its Shorts shelves and Shorts items.
+    function hideHomeShorts() {
+      var home = isYouTubeHome();
+      document.documentElement.classList.toggle('yt-no-home-shorts', home);
+      if (!home) {
+        return;
+      }
+
+      var root = document.querySelector('ytd-browse[page-subtype="home"]');
+      if (!root && location.hostname === 'www.youtube.com') {
+        root = document.querySelector('ytd-browse');
+      }
+      if (!root && location.hostname === 'm.youtube.com') {
+        root = document.querySelector('ytm-browse') || document.querySelector('ytm-app');
+      }
+      if (!root) {
+        return;
+      }
+
+      var shelves = root.querySelectorAll(
+        'ytd-rich-shelf-renderer[is-shorts], ytd-reel-shelf-renderer, ytd-shorts-shelf-renderer, ytm-reel-shelf-renderer'
+      );
+      for (var i = 0; i < shelves.length; i++) {
+        removeEl(shelves[i].closest('ytd-rich-section-renderer, ytm-rich-section-renderer, ytd-item-section-renderer') || shelves[i]);
+      }
+
+      var lockups = root.querySelectorAll(
+        'ytm-shorts-lockup-view-model, ytm-shorts-lockup-view-model-v2, ytd-reel-item-renderer'
+      );
+      for (var j = 0; j < lockups.length; j++) {
+        removeEl(lockups[j].closest('ytd-rich-item-renderer, ytm-rich-item-renderer, ytd-rich-section-renderer, ytm-rich-section-renderer') || lockups[j]);
+      }
+
+      if (location.hostname === 'www.youtube.com') {
+        var links = root.querySelectorAll('a[href^="/shorts/"]');
+        for (var n = 0; n < links.length; n++) {
+          removeEl(links[n].closest('ytd-rich-item-renderer, ytd-rich-section-renderer, ytd-reel-item-renderer'));
+        }
+        var badges = root.querySelectorAll('ytd-thumbnail-overlay-time-status-renderer[overlay-style="SHORTS"]');
+        for (var b = 0; b < badges.length; b++) {
+          removeEl(badges[b].closest('ytd-rich-item-renderer, ytd-rich-section-renderer, ytd-grid-video-renderer'));
+        }
+      }
+    }
+
     // YouTube mutates constantly, so coalesce bursts instead of running per mutation.
     var queued = false;
     function schedule() {
@@ -172,6 +255,7 @@
         queued = false;
         try {
           clearAds();
+          hideHomeShorts();
         } catch (e) {
         }
       }, 50);
@@ -185,6 +269,8 @@
       });
       // Safety net: some ad states appear without a DOM mutation near the player.
       setInterval(schedule, 1000);
+      document.addEventListener('yt-navigate-finish', schedule);
+      window.addEventListener('state-navigateend', schedule);
     }
 
     if (document.documentElement) {
