@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GitLab Download Merge Request
 // @namespace    local.git-downloader-mr
-// @version      1.0.0
+// @version      1.0.1
 // @description  Download the open GitLab merge request as HTML or Markdown
 // @match        https://*/*
 // @grant        GM_download
@@ -26,8 +26,6 @@
 
     var BAR_ID = 'tm-git-mr-download-bar';
     var PLACEHOLDER_ORG = 'YOUR_GITLAB_HOST';
-    var MAX_DIFF_FILE = 20000;
-    var MAX_DIFF_TOTAL = 400000;
 
     function normalizeOrg(value) {
         return String(value == null ? '' : value)
@@ -173,15 +171,6 @@
         return page(firstUrl, 0);
     }
 
-    function fetchDiffs(base) {
-        return fetchAllPages(base + '/diffs?per_page=100').catch(function (err) {
-            if (!err || err.status !== 404) throw err;
-            return gmGet(base + '/changes').then(function (data) {
-                return (data && data.changes) || [];
-            });
-        });
-    }
-
     function soft(promise, label) {
         return promise.then(function (value) {
             return { ok: true, value: value };
@@ -253,23 +242,6 @@
         };
     }
 
-    function fileStatus(file) {
-        if (!file) return 'modified';
-        if (file.new_file) return 'added';
-        if (file.deleted_file) return 'deleted';
-        if (file.renamed_file) return 'renamed';
-        return 'modified';
-    }
-
-    function mapDiff(file) {
-        return {
-            oldPath: (file && file.old_path) || '',
-            newPath: (file && file.new_path) || '',
-            status: fileStatus(file),
-            diff: (file && file.diff) || ''
-        };
-    }
-
     function mapList(list, mapper) {
         var out = [];
         if (!Array.isArray(list)) return out;
@@ -302,7 +274,7 @@
         return label;
     }
 
-    function toSnapshot(mr, notesResult, commitsResult, diffsResult, approvalsResult, context) {
+    function toSnapshot(mr, notesResult, commitsResult, approvalsResult, context) {
         var data = mr || {};
         var ctx = context || {};
         var projectPath = ctx.projectPath || '';
@@ -320,7 +292,6 @@
         if (up || down) votes = '+' + up + ' / -' + down;
         var notesOk = !!(notesResult && notesResult.ok);
         var commitsOk = !!(commitsResult && commitsResult.ok);
-        var diffsOk = !!(diffsResult && diffsResult.ok);
         return {
             reference: reference,
             iid: iid,
@@ -352,9 +323,7 @@
             notes: notesOk ? mapList(notesResult.value, mapNote) : [],
             notesLoaded: notesOk,
             commits: commitsOk ? mapList(commitsResult.value, mapCommit) : [],
-            commitsLoaded: commitsOk,
-            diffs: diffsOk ? mapList(diffsResult.value, mapDiff) : [],
-            diffsLoaded: diffsOk
+            commitsLoaded: commitsOk
         };
     }
 
@@ -417,10 +386,9 @@
             return Promise.all([
                 soft(fetchAllPages(base + '/notes?per_page=100&sort=asc&order_by=created_at'), 'notes'),
                 soft(fetchAllPages(base + '/commits?per_page=100'), 'commits'),
-                soft(fetchDiffs(base), 'diffs'),
                 soft(gmGet(base + '/approvals'), 'approvals')
             ]).then(function (parts) {
-                var snap = toSnapshot(data, parts[0], parts[1], parts[2], parts[3], mr);
+                var snap = toSnapshot(data, parts[0], parts[1], parts[2], mr);
                 if (!wantHtml) return snap;
                 return fillRenderedHtml(mr.origin, mr.projectPath, snap).catch(function (err) {
                     console.log('[GIT-MR] HTML render skipped', err);
@@ -605,11 +573,10 @@
     var CSS = [
         'body { margin: 0; background: #fafaf7; color: #1c1c1c; font: 16px/1.5 Georgia, "Iowan Old Style", Palatino, serif; }',
         'main { max-width: 860px; margin: 0 auto; padding: 32px 20px 64px; }',
-        '.key, .meta, dl, .source, footer, .file-path { font-family: ui-sans-serif, system-ui, sans-serif; }',
+        '.key, .meta, dl, .source, footer { font-family: ui-sans-serif, system-ui, sans-serif; }',
         '.key { margin: 0; letter-spacing: .04em; color: #5c5c5c; font-size: 13px; }',
         'h1 { font-size: 1.75rem; line-height: 1.25; margin: 4px 0 8px; }',
         'h2 { font-size: 1.2rem; margin: 28px 0 8px; }',
-        'h3 { font-size: 1rem; margin: 18px 0 6px; }',
         '.source, footer { font-size: 13px; color: #5c5c5c; }',
         'dl { display: grid; grid-template-columns: 160px 1fr; gap: 4px 12px; font-size: 14px; margin: 16px 0; }',
         'dt { color: #5c5c5c; }',
@@ -624,7 +591,6 @@
         '.note { border-top: 1px solid #e4e4dc; padding: 12px 0; }',
         '.note.system { color: #333; }',
         '.meta { font-size: 13px; color: #5c5c5c; margin: 0 0 8px; }',
-        '.file-path { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 14px; }',
         '.empty { color: #777; font-style: italic; }',
         'a { color: #0b57d0; }',
         'ul, ol { padding-left: 1.4em; }'
@@ -654,7 +620,6 @@
             '<h2>Description</h2>\n<div class="description">' + description + '</div>\n' +
             '<h2>Notes</h2>\n' + notesHtml(snap, origin) + '\n' +
             '<h2>Commits</h2>\n' + commitsHtml(snap) + '\n' +
-            '<h2>Changes</h2>\n' + changesHtml(snap) + '\n' +
             '<footer>Saved ' + escapeHtml(formatWhen(snap.fetchedAt)) + '</footer>\n' +
             '</main>\n</body>\n</html>\n';
     }
@@ -699,80 +664,8 @@
         return ' <span class="meta">(' + escapeHtml(bits.join(', ')) + ')</span>';
     }
 
-    function fileTitle(file) {
-        if (file.status === 'renamed' && file.oldPath && file.newPath && file.oldPath !== file.newPath) {
-            return file.oldPath + ' → ' + file.newPath;
-        }
-        if (file.status === 'deleted') return file.oldPath || file.newPath || 'file';
-        return file.newPath || file.oldPath || 'file';
-    }
-
-    function boundDiffs(list) {
-        var total = 0;
-        var files = [];
-        var hidden = 0;
-        for (var i = 0; i < list.length; i++) {
-            var file = list[i];
-            var text = String(file.diff || '');
-            var truncated = false;
-            var omitted = false;
-            if (total >= MAX_DIFF_TOTAL) {
-                text = '';
-                omitted = true;
-                hidden += 1;
-            } else {
-                if (text.length > MAX_DIFF_FILE) {
-                    text = text.slice(0, MAX_DIFF_FILE);
-                    truncated = true;
-                }
-                if (total + text.length > MAX_DIFF_TOTAL) {
-                    text = text.slice(0, MAX_DIFF_TOTAL - total);
-                    truncated = true;
-                }
-                total += text.length;
-            }
-            files.push({
-                oldPath: file.oldPath,
-                newPath: file.newPath,
-                status: file.status,
-                diff: text,
-                truncated: truncated,
-                omitted: omitted
-            });
-        }
-        return { files: files, hidden: hidden };
-    }
-
-    function changesHtml(snap) {
-        if (!snap.diffsLoaded) return '<p class="empty">Changes could not be loaded.</p>';
-        if (!snap.diffs.length) return '<p class="empty">No changes.</p>';
-        var bounded = boundDiffs(snap.diffs);
-        var html = '';
-        if (bounded.hidden) {
-            html += '<p class="empty">Patch text omitted for ' + bounded.hidden + ' file' +
-                (bounded.hidden === 1 ? '' : 's') + ' after the size limit.</p>';
-        }
-        for (var i = 0; i < bounded.files.length; i++) {
-            var file = bounded.files[i];
-            html += '<section class="file"><h3><span class="file-path">' + escapeHtml(fileTitle(file)) +
-                '</span> (' + escapeHtml(file.status) + ')</h3>';
-            if (file.omitted) html += '<p class="empty">Diff omitted.</p>';
-            else if (!file.diff) html += '<p class="empty">No text diff.</p>';
-            else html += '<pre>' + escapeHtml(file.diff) + (file.truncated ? '\n… diff truncated' : '') + '</pre>';
-            html += '</section>';
-        }
-        return html;
-    }
-
     function cellPipe(value) {
         return String(value == null ? '' : value).replace(/\|/g, '\\|').replace(/\r?\n/g, ' ');
-    }
-
-    function fence(code, lang) {
-        var ticks = '```';
-        var body = String(code || '').replace(/\s+$/, '');
-        while (body.indexOf(ticks) !== -1) ticks += '`';
-        return ticks + (lang || '') + '\n' + body + '\n' + ticks;
     }
 
     function absolutizeMarkdown(text, origin) {
@@ -810,8 +703,6 @@
         lines.push('');
         lines.push(mdSection('Commits', commitsMarkdown(snap), commitsEmpty(snap)));
         lines.push('');
-        lines.push(mdSection('Changes', changesMarkdown(snap), changesEmpty(snap)));
-        lines.push('');
         lines.push('Saved ' + formatWhen(snap.fetchedAt));
         lines.push('');
         return lines.join('\n');
@@ -823,10 +714,6 @@
 
     function commitsEmpty(snap) {
         return snap.commitsLoaded ? '_No commits._' : '_Commits could not be loaded._';
-    }
-
-    function changesEmpty(snap) {
-        return snap.diffsLoaded ? '_No changes._' : '_Changes could not be loaded._';
     }
 
     function notesMarkdown(snap, origin) {
@@ -860,25 +747,6 @@
             lines.push(line);
         }
         return lines.join('\n');
-    }
-
-    function changesMarkdown(snap) {
-        if (!snap.diffsLoaded || !snap.diffs.length) return '';
-        var bounded = boundDiffs(snap.diffs);
-        var blocks = [];
-        if (bounded.hidden) {
-            blocks.push('_Patch text omitted for ' + bounded.hidden + ' file' +
-                (bounded.hidden === 1 ? '' : 's') + ' after the size limit._');
-        }
-        for (var i = 0; i < bounded.files.length; i++) {
-            var file = bounded.files[i];
-            var block = '### ' + fileTitle(file) + ' (' + file.status + ')';
-            if (file.omitted) block += '\n\n_Diff omitted._';
-            else if (!file.diff) block += '\n\n_No text diff._';
-            else block += '\n\n' + fence(file.diff + (file.truncated ? '\n… diff truncated' : ''), 'diff');
-            blocks.push(block);
-        }
-        return blocks.join('\n\n');
     }
 
     function downloadText(text, filename, mime, kind) {
@@ -1041,7 +909,7 @@
             if (onMr) console.log('[GIT-MR] page does not start with https://' + normalizeOrg(git_ui_url_organization));
             return;
         }
-        console.log('[GIT-MR] script started (v1.0.0) on', href);
+        console.log('[GIT-MR] script started (v1.0.1) on', href);
         setInterval(ensureBar, 1000);
         if (document.body) ensureBar();
         else document.addEventListener('DOMContentLoaded', ensureBar);
@@ -1062,8 +930,7 @@
             downloadBaseName: downloadBaseName,
             downloadDir: downloadDir,
             absolutizeMarkdown: absolutizeMarkdown,
-            headerValue: headerValue,
-            boundDiffs: boundDiffs
+            headerValue: headerValue
         };
     }
 })();

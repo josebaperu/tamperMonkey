@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         YouTube / YouTube Music
 // @namespace    https://tampermonkey.net/
-// @version      1.0.0
-// @description  Runs on YouTube and YouTube Music
+// @version      1.1.0
+// @description  Block YouTube ads. On YouTube Music, leave the player square blank.
 // @author       you
 // @match        https://www.youtube.com/*
 // @match        https://m.youtube.com/*
@@ -28,6 +28,29 @@
 
   if (!window.__ytAdBlock) {
     window.__ytAdBlock = true;
+
+    // YouTube Music only: hide the video wrapper so the player square stays
+    // blank. Audio keeps playing. No toggle. www.youtube.com and m.youtube.com
+    // are unchanged.
+    if (location.hostname === 'music.youtube.com') {
+      var ytmBlank = document.createElement('style');
+      ytmBlank.textContent = [
+        'ytmusic-player #song-video .player-wrapper,',
+        'ytmusic-player #song-video .html5-video-container,',
+        'ytmusic-player #song-video video,',
+        'ytmusic-player #song-video .ytp-cued-thumbnail-overlay,',
+        'ytmusic-player #song-video .ytp-ce-element,',
+        'ytmusic-player #song-video .ytp-endscreen-content,',
+        'ytmusic-player #song-video .ytp-upnext,',
+        'ytmusic-player #song-video .ytp-videowall-still,',
+        'ytmusic-player[video-mode] #song-image,',
+        'ytmusic-player[video-mode] #song-image img {',
+        '  opacity: 0 !important;',
+        '  visibility: hidden !important;',
+        '}'
+      ].join('\n');
+      (document.head || document.documentElement).appendChild(ytmBlank);
+    }
 
     // Keys YouTube uses to carry ad breaks in the player/browse responses.
     var AD_KEYS = [
