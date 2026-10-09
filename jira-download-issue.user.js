@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Jira Download Issue
 // @namespace    local.jira-download-issue
-// @version      1.1.0
+// @version      1.5.2
 // @description  Download the open Jira Cloud issue as HTML or Markdown
 // @match        https://*.atlassian.net/*
 // @grant        GM_download
@@ -27,7 +27,8 @@
         'parent', 'subtasks', 'project'
     ].join(',');
 
-    console.log('[JIRA] script started (v1.1.0) on', typeof location !== 'undefined' ? location.href : '');
+    console.log('[JIRA] script started (v1.5.2) on', typeof location !== 'undefined' ? location.href : '');
+    console.log('[JIRA] GM_download:', typeof GM_download === 'function' ? 'available' : 'missing');
 
     function issueKeyFromUrl(href) {
         var url;
@@ -840,46 +841,41 @@
         return lines.join('\n');
     }
 
-    function downloadText(text, filename, mime) {
+    function downloadFolder(kind) {
+        return kind === 'md' ? 'jiraMD' : 'jiraHtml';
+    }
+
+    // text/plain makes the browser replace .html and .md with .txt.
+    function downloadMime(filename) {
+        var name = String(filename || '').toLowerCase();
+        if (name.slice(-5) === '.html' || name.slice(-4) === '.htm') return 'text/html';
+        if (name.slice(-3) === '.md') return 'text/markdown';
+        return 'text/plain';
+    }
+
+    function downloadText(text, filename, folder) {
+        var mime = downloadMime(filename);
+        var blob = new Blob([text], { type: mime });
+        var blobUrl = URL.createObjectURL(blob);
+
+        function cleanup() {
+            setTimeout(function () { URL.revokeObjectURL(blobUrl); }, 10000);
+        }
+
+        function plainDownload() {
+            var a = document.createElement('a');
+            a.href = blobUrl;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            cleanup();
+            console.log('[JIRA] plain download cannot choose a folder');
+            console.log('[JIRA] plain download file name:', filename);
+        }
+
         return new Promise(function (resolve, reject) {
-            var blob = new Blob([text], { type: mime });
-            var blobUrl = URL.createObjectURL(blob);
-            function cleanup() {
-                setTimeout(function () { URL.revokeObjectURL(blobUrl); }, 10000);
-            }
-            function plainDownload() {
-                var a = document.createElement('a');
-                a.href = blobUrl;
-                a.download = filename;
-                document.body.appendChild(a);
-                a.click();
-                a.remove();
-                cleanup();
-                console.log('[JIRA] plain download triggered:', a.download);
-            }
-            if (typeof GM_download === 'function') {
-                var name = 'jira_issues/' + filename;
-                console.log('[JIRA] using GM_download:', name);
-                GM_download({
-                    url: 'data:' + mime + ';charset=utf-8,' + encodeURIComponent(text),
-                    name: name,
-                    saveAs: false,
-                    onload: function () {
-                        console.log('[JIRA] GM_download finished', name);
-                        cleanup();
-                        resolve();
-                    },
-                    onerror: function (err) {
-                        console.log('[JIRA] GM_download failed, falling back', err);
-                        try {
-                            plainDownload();
-                            resolve();
-                        } catch (e) {
-                            reject(e);
-                        }
-                    }
-                });
-            } else {
+            if (typeof GM_download !== 'function') {
                 console.log('[JIRA] GM_download not available, using plain download');
                 try {
                     plainDownload();
@@ -887,7 +883,43 @@
                 } catch (e) {
                     reject(e);
                 }
+                return;
             }
+
+            var name = folder + '/' + filename;
+            var dot = filename.lastIndexOf('.');
+            var extension = dot === -1 ? '' : filename.slice(dot);
+            console.log('[JIRA] GM_download path:', 'Downloads/' + name);
+            console.log('[JIRA] GM_download type:', mime, 'extension:', extension || '(none)', 'chars:', text.length);
+            GM_download({
+                url: 'data:' + mime + ';charset=utf-8,' + encodeURIComponent(text),
+                name: name,
+                saveAs: false,
+                onload: function () {
+                    console.log('[JIRA] GM_download finished:', 'Downloads/' + name);
+                    cleanup();
+                    resolve();
+                },
+                onerror: function (err) {
+                    var code = err && err.error ? err.error : '';
+                    var details = err && err.details ? err.details : '';
+                    console.log('[JIRA] GM_download failed');
+                    console.log('[JIRA] GM_download error code:', code || '(none)');
+                    console.log('[JIRA] GM_download error details:', details || err);
+                    if (code === 'not_whitelisted') {
+                        console.log('[JIRA] add', extension || 'this extension', 'to Tampermonkey Whitelisted File Extensions');
+                        cleanup();
+                        reject(new Error('add html and md to Tampermonkey Whitelisted File Extensions'));
+                        return;
+                    }
+                    try {
+                        plainDownload();
+                        resolve();
+                    } catch (e) {
+                        reject(e);
+                    }
+                }
+            });
         });
     }
 
@@ -930,16 +962,17 @@
     function onDownload(kind, btn) {
         var key = issueKeyFromUrl(location.href);
         if (!key || btn.disabled) return;
+        var folder = downloadFolder(kind);
         setBusy(true);
         btn.textContent = 'saving…';
-        console.log('[JIRA] download clicked', kind, key);
+        console.log('[JIRA] download clicked', kind, key, 'folder:', folder);
         fetchSnapshot(key).then(function (snap) {
             var markdown = kind === 'md';
             var body = markdown ? renderMarkdown(snap) : renderHtml(snap);
             var filename = downloadBaseName(snap) + (markdown ? '.md' : '.html');
-            var mime = markdown ? 'text/markdown' : 'text/html';
-            return downloadText(body, filename, mime).then(function () {
-                console.log('[JIRA] saved', filename);
+            console.log('[JIRA] issue loaded', snap.key, 'file:', filename, 'chars:', body.length);
+            return downloadText(body, filename, folder).then(function () {
+                console.log('[JIRA] saved', folder + '/' + filename);
                 flash(btn, 'saved');
             });
         }).catch(function (err) {
